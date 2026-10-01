@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kiela — Angolan Mancala</title>
+<style>
+  :root{
+    --wood:#8b5e34; --wood-dark:#6f4820; --hole:#5a3a18; --hole-rim:#4a2f12;
+    --seed:#e8d5a3; --bg:#2b2320; --text:#f0e6d2; --accent:#e0a458; --danger:#c0392b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Georgia,'Times New Roman',serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}
+  h1{margin:4px 0 0;font-size:1.6em;letter-spacing:2px;color:var(--accent)}
+  .sub{font-size:.85em;opacity:.7;margin-bottom:12px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;justify-content:center}
+  select,button{font-family:inherit;font-size:.9em;padding:6px 12px;border-radius:6px;border:1px solid var(--accent);background:#3a2f28;color:var(--text);cursor:pointer}
+  button:hover{background:var(--accent);color:#2b2320}
+  .board{background:linear-gradient(145deg,var(--wood),var(--wood-dark));border-radius:18px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,.5);position:relative}
+  .rowlabel{font-size:.7em;text-align:center;opacity:.75;margin:2px 0;letter-spacing:1px}
+  .row{display:grid;grid-template-columns:repeat(10,1fr);gap:6px}
+  .gap{height:14px}
+  .hole{width:58px;height:58px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#6e4a20,var(--hole) 70%);border:3px solid var(--hole-rim);display:flex;align-items:center;justify-content:center;position:relative;font-size:1.15em;font-weight:bold;color:var(--seed);user-select:none;transition:box-shadow .15s,transform .1s}
+  .hole.legal{cursor:pointer;box-shadow:0 0 0 3px var(--accent)}
+  .hole.legal:hover{transform:scale(1.08)}
+  .hole.lastdrop{box-shadow:0 0 12px 4px #fff}
+  .hole.captured{box-shadow:0 0 14px 5px var(--danger)}
+  .hole.empty{color:rgba(232,213,163,.25)}
+  .dots{position:absolute;bottom:4px;display:flex;gap:2px}
+  .dot{width:5px;height:5px;border-radius:50%;background:var(--seed)}
+  .status{margin:14px 0 6px;font-size:1.05em;min-height:1.4em;text-align:center}
+  .status .cap{color:var(--danger);font-weight:bold}
+  .scores{display:flex;gap:30px;font-size:.9em;opacity:.85}
+  .log{max-width:640px;width:100%;max-height:130px;overflow-y:auto;font-size:.78em;background:#221b18;border-radius:8px;padding:8px 12px;margin-top:10px;line-height:1.5}
+  details{max-width:680px;margin-top:14px;font-size:.88em;line-height:1.55;background:#221b18;border-radius:8px;padding:10px 16px}
+  summary{cursor:pointer;color:var(--accent);font-weight:bold}
+  details p{margin:.5em 0}
+  .sidebadge{position:absolute;left:-4px;font-size:.65em;background:var(--accent);color:#2b2320;padding:2px 8px;border-radius:4px;transform:translateX(-100%)}
+</style>
+</head>
+<body>
+<h1>KIELA</h1>
+<div class="sub">Four-row mancala of the Kimbundu people, Angola — "the game of peace"</div>
+
+<div class="controls">
+  <label>Setup:
+    <select id="mode">
+      <option value="beginner">Beginner (1 seed / hole)</option>
+      <option value="advanced">Advanced (2 seeds / hole)</option>
+    </select>
+  </label>
+  <label>First move:
+    <select id="first"><option value="0">You</option><option value="1">Computer</option></select>
+  </label>
+  <label>Speed:
+    <select id="speed"><option value="140">Normal</option><option value="60">Fast</option><option value="0">Instant</option></select>
+  </label>
+  <button id="newgame">New game</button>
+</div>
+
+<div class="board" id="board"></div>
+<div class="status" id="status"></div>
+<div class="scores"><span id="scoreN"></span><span id="scoreS"></span></div>
+<div class="log" id="log"></div>
+
+<details>
+  <summary>How to play (quick reference)</summary>
+  <p><b>Board:</b> 4 rows × 10 holes. You control the bottom two rows (your <i>outer</i> row is nearest you, your <i>inner</i> row faces the computer). Seeds travel anticlockwise around <i>your own two rows only</i>: rightward along your outer row, then leftward back along your inner row.</p>
+  <p><b>Your turn:</b> click a highlighted hole. Its seeds are sown one per hole anticlockwise. If the last seed lands in an <b>empty</b> hole, your turn ends. If it lands in an <b>occupied</b> hole, everything in that hole is picked up and sowing continues (multi-lap).</p>
+  <p><b>Capture:</b> if a lap ends in an occupied hole of your <b>inner row</b> and the computer's inner hole directly opposite is occupied, you capture those seeds — plus the seeds in its outer hole behind it, if occupied. Captured seeds go into your hand and you keep sowing them into your own rows, starting after the hole that made the capture.</p>
+  <p><b>Losing:</b> in Advanced rules you lose when you cannot move (every hole empty or holding a single seed — singles cannot be sown). In Beginner rules singles <i>can</i> be sown and you only lose when your side is completely empty.</p>
+</details>
+
+<!-- ===== ENGINE (pure logic, no DOM) ===== -->
+<script id="engine">
+// Cycle indices per player: 0..9 outer row, 10..19 inner row (anticlockwise).
+// South (human, p=0): outer = bottom row cols 0..9 L->R; inner i -> col 19-i.
+// North (AI, p=1): 180-degree mirror.
+// Opposite holes for inner index i (10..19): opponent inner = 29-i, opponent outer = i-10.
+
+function initBoard(mode){
+  const n = mode==='beginner'?1:2;
+  const b=[new Array(20).fill(0), new Array(20).fill(0)];
+  for(const p of [0,1]){
+    for(let i=0;i<10;i++) b[p][i]=n;          // whole outer row
+    for(let i=10;i<14;i++) b[p][i]=n;         // player's four RIGHT inner holes
+  }
+  return b;
+}
+// Note: inner indices 10..13 are cols 9..6 for south = the player's right side. Mirrored for north.
+
+function legalMoves(board,p,beginner){
+  const min = beginner?1:2, out=[];
+  for(let i=0;i<20;i++) if(board[p][i]>=min) out.push(i);
+  return out;
+}
+
+function hasLost(board,p,beginner){
+  if(beginner) return board[p].every(v=>v===0);
+  return legalMoves(board,p,false).length===0;
+}
+
+// Mutates board. Returns {captured, steps, bailed}
+function applyMove(board,p,start){
+  const o=1-p, steps=[];
+  let hand=board[p][start]; board[p][start]=0;
+  steps.push({t:'lift',p,i:start});
+  let pos=start, captured=0, laps=0;
+  while(hand>0){
+    pos=(pos+1)%20;
+    board[p][pos]++; hand--;
+    steps.push({t:'drop',p,i:pos});
+    if(hand===0){
+      if(board[p][pos]===1) break;               // landed in empty -> turn over
+      if(pos>=10){                                // inner row: try capture
+        const oi=29-pos, oo=pos-10;
+        if(board[o][oi]>0){
+          let take=board[o][oi]; board[o][oi]=0;
+          steps.push({t:'cap',p:o,i:oi});
+          if(board[o][oo]>0){ take+=board[o][oo]; board[o][oo]=0; steps.push({t:'cap',p:o,i:oo}); }
+          captured+=take; hand=take;              // sow captives from next hole
+          continue;
+        }
+      }
+      hand=board[p][pos]; board[p][pos]=0;        // relay lap
+      steps.push({t:'lift',p,i:pos});
+      if(++laps>2000){                            // safety valve: end lap, keep seeds on board
+        board[p][pos]+=hand; hand=0;
+        return {captured,steps,bailed:true};
+      }
+    }
+  }
+  return {captured,steps,bailed:false};
+}
+
+function total(board,p){ return board[p].reduce((a,b)=>a+b,0); }
+
+// 2-ply greedy AI: maximize own seed gain minus opponent's best reply gain.
+function aiChoose(board,p,beginner){
+  const moves=legalMoves(board,p,beginner);
+  if(!moves.length) return -1;
+  let best=[], bestScore=-Infinity;
+  for(const m of moves){
+    const b1=[board[0].slice(),board[1].slice()];
+    const r1=applyMove(b1,p,m);
+    if(hasLost(b1,1-p,beginner)) return m;       // winning move
+    let oppBest=0;
+    for(const om of legalMoves(b1,1-p,beginner)){
+      const b2=[b1[0].slice(),b1[1].slice()];
+      const r2=applyMove(b2,1-p,om);
+      if(r2.captured>oppBest) oppBest=r2.captured;
+    }
+    const score=r1.captured-0.9*oppBest+Math.random()*0.01;
+    if(score>bestScore){bestScore=score;best=[m];}
+  }
+  return best[Math.floor(Math.random()*best.length)];
+}
+</script>
+
+<!-- ===== UI ===== -->
+<script>
+const boardEl=document.getElementById('board'), statusEl=document.getElementById('status'), logEl=document.getElementById('log');
+let board, turn, beginner, busy=false, over=false;
+
+// grid cell lookup: gridRows[r][c] -> {p, i}
+function cellFor(p,i){
+  if(p===0) return i<10 ? {r:3,c:i} : {r:2,c:19-i};
+  return i<10 ? {r:0,c:9-i} : {r:1,c:i-10};
+}
+const holes={}; // "p-i" -> element
+
+function buildBoard(){
+  boardEl.innerHTML='';
+  const labels=['Computer — outer','Computer — inner','You — inner','You — outer'];
+  const grid=[[],[],[],[]];
+  for(const p of [0,1]) for(let i=0;i<20;i++){ const {r,c}=cellFor(p,i); grid[r][c]={p,i}; }
+  for(let r=0;r<4;r++){
+    const lab=document.createElement('div'); lab.className='rowlabel'; lab.textContent=labels[r];
+    if(r===0||r===2) boardEl.appendChild(lab);
+    const row=document.createElement('div'); row.className='row';
+    for(let c=0;c<10;c++){
+      const {p,i}=grid[r][c];
+      const h=document.createElement('div'); h.className='hole'; h.dataset.p=p; h.dataset.i=i;
+      h.addEventListener('click',()=>onClick(p,i));
+      holes[p+'-'+i]=h; row.appendChild(h);
+    }
+    boardEl.appendChild(row);
+    if(r===1||r===3){ const l2=document.createElement('div'); l2.className='rowlabel'; l2.textContent=labels[r]; boardEl.appendChild(l2); }
+    if(r===1){ const g=document.createElement('div'); g.className='gap'; boardEl.appendChild(g); }
+  }
+}
+
+function render(highlight){
+  for(const p of [0,1]) for(let i=0;i<20;i++){
+    const h=holes[p+'-'+i], v=board[p][i];
+    h.textContent=v||'·';
+    h.classList.toggle('empty',v===0);
+    h.classList.remove('legal','lastdrop','captured');
+    let dots=h.querySelector('.dots'); if(dots) dots.remove();
+    if(v>0&&v<=5){ dots=document.createElement('div');dots.className='dots';
+      for(let d=0;d<v;d++){const dd=document.createElement('div');dd.className='dot';dots.appendChild(dd);}
+      h.appendChild(dots);}
+  }
+  if(highlight&&!over&&turn===0&&!busy)
+    for(const m of legalMoves(board,0,beginner)) holes['0-'+m].classList.add('legal');
+  document.getElementById('scoreS').textContent='Your seeds: '+total(board,0);
+  document.getElementById('scoreN').textContent='Computer seeds: '+total(board,1);
+}
+
+function log(msg){ const d=document.createElement('div');d.textContent=msg;logEl.prepend(d); }
+function setStatus(html){ statusEl.innerHTML=html; }
+
+async function animate(steps){
+  const delay=+document.getElementById('speed').value;
+  if(delay===0){ render(false); return; }
+  // replay: rebuild from snapshots is complex; simply flash each step's hole while board already final.
+  for(const s of steps){
+    const h=holes[s.p+'-'+s.i];
+    h.classList.add(s.t==='cap'?'captured':'lastdrop');
+    await new Promise(r=>setTimeout(r,delay));
+    h.classList.remove('lastdrop','captured');
+  }
+  render(false);
+}
+
+async function onClick(p,i){
+  if(busy||over||turn!==0||p!==0) return;
+  if(!legalMoves(board,0,beginner).includes(i)) return;
+  busy=true; render(false);
+  const r=applyMove(board,0,i);
+  log('You sowed from hole '+(i<10?'O':'I')+((i<10?i:19-i)+1)+(r.captured?' — captured '+r.captured+'!':''));
+  if(r.captured) setStatus('<span class="cap">You captured '+r.captured+' seeds!</span>');
+  await animate(r.steps);
+  endTurn();
+}
+
+function endTurn(){
+  turn=1-turn;
+  if(hasLost(board,turn,beginner)){
+    over=true; busy=false;
+    setStatus(turn===0?'<b>Computer wins.</b> You have no legal move.':'<b>You win!</b> The computer has no legal move.');
+    log(turn===0?'Game over — computer wins.':'Game over — you win!');
+    render(false); return;
+  }
+  if(turn===1){ setStatus('Computer is thinking…'); setTimeout(aiTurn,400); }
+  else { busy=false; setStatus('Your turn — click a highlighted hole.'); render(true); }
+}
+
+async function aiTurn(){
+  const m=aiChoose(board,1,beginner);
+  const r=applyMove(board,1,m);
+  log('Computer sowed'+(r.captured?' — captured '+r.captured+' of your seeds!':'.'));
+  if(r.captured) setStatus('<span class="cap">Computer captured '+r.captured+' seeds.</span>');
+  await animate(r.steps);
+  endTurn();
+}
+
+function newGame(){
+  beginner=document.getElementById('mode').value==='beginner';
+  board=initBoard(beginner?'beginner':'advanced');
+  turn=+document.getElementById('first').value; over=false; busy=false;
+  logEl.innerHTML=''; log('New game — '+(beginner?'beginner':'advanced')+' setup.');
+  buildBoard();
+  if(turn===1){ render(false); setStatus('Computer is thinking…'); setTimeout(aiTurn,500); }
+  else { setStatus('Your turn — click a highlighted hole.'); render(true); }
+}
+
+document.getElementById('newgame').addEventListener('click',newGame);
+document.getElementById('mode').addEventListener('change',newGame);
+newGame();
+</script>
+</body>
+</html>
